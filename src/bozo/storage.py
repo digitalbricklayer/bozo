@@ -7,9 +7,6 @@ from pathlib import Path
 
 from bozo.transaction import Transaction
 
-DATABASE_NAME = "bozo.db"
-
-
 class DatabaseNotInitializedError(Exception):
     """Raised when trying to use a database that hasn't been initialized."""
     pass
@@ -18,35 +15,33 @@ class DatabaseNotInitializedError(Exception):
 class TransactionStorage:
     """SQLite-based storage for transactions."""
 
-    def __init__(self, location: Path, require_init: bool = True):
-        """Initialize storage with a folder location.
+    def __init__(self, db_path: Path, require_init: bool = True):
+        """Initialize storage with a database file path.
 
         Args:
-            location: Folder where the database is stored.
+            db_path: Full path to the SQLite database file.
             require_init: If True, raise error if database doesn't exist.
         """
-        self.location = Path(location)
-        self.db_path = self.location / DATABASE_NAME
+        self.db_path = Path(db_path)
 
         if require_init and not self.db_path.exists():
             raise DatabaseNotInitializedError(
-                f"Database not initialized at '{self.location}'. "
-                f"Run 'bozo init {self.location}' first."
+                f"Database not found at '{self.db_path}'. "
+                f"Run 'bozo init --name <name> --folder <folder>' first."
             )
 
     @classmethod
-    def init_database(cls, location: Path) -> "TransactionStorage":
-        """Initialize a new database at the given location.
+    def init_database(cls, db_path: Path) -> "TransactionStorage":
+        """Initialize a new database at the given path.
 
         Args:
-            location: Folder where the database should be created.
+            db_path: Full path to the SQLite database file.
 
         Returns:
             TransactionStorage instance for the new database.
         """
-        location = Path(location)
-        location.mkdir(parents=True, exist_ok=True)
-        storage = cls(location, require_init=False)
+        db_path = Path(db_path)
+        storage = cls(db_path, require_init=False)
         storage._init_db()
         return storage
 

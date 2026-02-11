@@ -26,7 +26,8 @@ def create_parser() -> argparse.ArgumentParser:
 
     # Init database command
     init_parser = subparsers.add_parser("init", help="Initialize the database")
-    init_parser.add_argument("folder", type=Path, help="Folder where the database will be created")
+    init_parser.add_argument("--name", required=True, help="Name of the database file (e.g. ledger)")
+    init_parser.add_argument("--folder", type=Path, default=Path("."), help="Folder where the database is created (default: current directory)")
 
     # Record transaction command
     record_parser = subparsers.add_parser("record", help="Record a new transaction")
@@ -38,10 +39,10 @@ def create_parser() -> argparse.ArgumentParser:
         help="Transaction category",
     )
     record_parser.add_argument(
-        "-l", "--location",
+        "-d", "--database",
         type=Path,
         required=True,
-        help="Folder where the database is located",
+        help="Path to the database file",
     )
 
     # List transactions command
@@ -51,19 +52,19 @@ def create_parser() -> argparse.ArgumentParser:
         help="Filter by category",
     )
     list_parser.add_argument(
-        "-l", "--location",
+        "-d", "--database",
         type=Path,
         required=True,
-        help="Folder where the database is located",
+        help="Path to the database file",
     )
 
     # Summary command
     summary_parser = subparsers.add_parser("summary", help="Show transaction summary")
     summary_parser.add_argument(
-        "-l", "--location",
+        "-d", "--database",
         type=Path,
         required=True,
-        help="Folder where the database is located",
+        help="Path to the database file",
     )
 
     return parser
@@ -72,14 +73,18 @@ def create_parser() -> argparse.ArgumentParser:
 def cmd_init(args) -> int:
     """Handle the init command."""
     folder = args.folder.resolve()
-    db_path = folder / "bozo.db"
+    db_path = folder / f"{args.name}.db"
 
     if db_path.exists():
-        print(f"Database already exists at '{folder}'.")
+        print(f"Database already exists at '{db_path}'.")
         return 1
 
-    TransactionStorage.init_database(folder)
-    print(f"Initialized database at '{folder}'.")
+    if not folder.is_dir():
+        print(f"Error: Folder '{folder}' does not exist.", file=sys.stderr)
+        return 1
+
+    TransactionStorage.init_database(db_path)
+    print(f"Initialized database at '{db_path}'.")
     return 0
 
 
@@ -154,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Commands that require an initialized database
     try:
-        storage = TransactionStorage(args.location)
+        storage = TransactionStorage(args.database)
     except DatabaseNotInitializedError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

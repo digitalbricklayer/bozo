@@ -12,7 +12,7 @@ from bozo.transaction import Transaction
 @pytest.fixture
 def storage(tmp_path):
     """Create a storage instance with an initialized database."""
-    return TransactionStorage.init_database(tmp_path)
+    return TransactionStorage.init_database(tmp_path / "test.db")
 
 
 @pytest.fixture
@@ -161,16 +161,18 @@ def test_empty_summary(storage):
 
 def test_database_not_initialized_error(tmp_path):
     """Test that accessing an uninitialized database raises an error."""
+    db_path = tmp_path / "nonexistent.db"
     with pytest.raises(DatabaseNotInitializedError) as exc_info:
-        TransactionStorage(tmp_path)
-    assert "not initialized" in str(exc_info.value)
-    assert str(tmp_path) in str(exc_info.value)
+        TransactionStorage(db_path)
+    assert "not found" in str(exc_info.value)
+    assert str(db_path) in str(exc_info.value)
 
 
 def test_init_database(tmp_path):
     """Test initializing a new database."""
-    storage = TransactionStorage.init_database(tmp_path)
-    assert (tmp_path / "bozo.db").exists()
+    db_path = tmp_path / "ledger.db"
+    storage = TransactionStorage.init_database(db_path)
+    assert db_path.exists()
     # Should be able to use it immediately
     storage.add(Transaction(
         amount=Decimal("100.00"),
