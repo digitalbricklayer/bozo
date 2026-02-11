@@ -1,6 +1,7 @@
 """Command line interface for bozo."""
 
 import argparse
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -41,8 +42,8 @@ def create_parser() -> argparse.ArgumentParser:
     record_parser.add_argument(
         "-d", "--database",
         type=Path,
-        required=True,
-        help="Path to the database file",
+        default=None,
+        help="Path to the database file (default: BOZO_DB env var)",
     )
 
     # List transactions command
@@ -54,8 +55,8 @@ def create_parser() -> argparse.ArgumentParser:
     list_parser.add_argument(
         "-d", "--database",
         type=Path,
-        required=True,
-        help="Path to the database file",
+        default=None,
+        help="Path to the database file (default: BOZO_DB env var)",
     )
 
     # Summary command
@@ -63,8 +64,8 @@ def create_parser() -> argparse.ArgumentParser:
     summary_parser.add_argument(
         "-d", "--database",
         type=Path,
-        required=True,
-        help="Path to the database file",
+        default=None,
+        help="Path to the database file (default: BOZO_DB env var)",
     )
 
     return parser
@@ -157,9 +158,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         return cmd_init(args)
 
+    # Resolve database path from -d flag or BOZO_DB env var
+    db_path = args.database
+    if db_path is None:
+        env_db = os.environ.get("BOZO_DB")
+        if env_db:
+            db_path = Path(env_db)
+        else:
+            print("Error: No database specified. Use -d or set BOZO_DB environment variable.", file=sys.stderr)
+            return 1
+
     # Commands that require an initialized database
     try:
-        storage = TransactionStorage(args.database)
+        storage = TransactionStorage(db_path)
     except DatabaseNotInitializedError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
