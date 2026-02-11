@@ -4,6 +4,42 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
+ACCOUNT_TYPES = {
+    "assets": "asset",
+    "liabilities": "liability",
+    "income": "income",
+    "expenses": "expense",
+    "capital": "capital",
+    "drawings": "drawings",
+}
+
+
+def parse_account_path(name: str) -> tuple[str, list[str]]:
+    """Split an account name on ':' and validate the root segment.
+
+    Returns (type, segments). Raises ValueError for invalid roots.
+    """
+    segments = [s.strip() for s in name.lower().split(":")]
+    if not segments or not segments[0]:
+        raise ValueError(f"Invalid account name: '{name}'")
+    root = segments[0]
+    if root not in ACCOUNT_TYPES:
+        valid = ", ".join(sorted(ACCOUNT_TYPES))
+        raise ValueError(
+            f"Invalid account root '{root}'. Must be one of: {valid}"
+        )
+    return ACCOUNT_TYPES[root], segments
+
+
+@dataclass
+class Account:
+    """A ledger account in the chart of accounts."""
+
+    name: str
+    type: str
+    parent_id: int | None = None
+    id: int | None = None
+
 
 @dataclass
 class LineItem:

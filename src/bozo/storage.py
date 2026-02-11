@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from bozo.transaction import JournalEntry, LineItem
+from bozo.transaction import Account, JournalEntry, LineItem, parse_account_path
 
 
 class DatabaseNotInitializedError(Exception):
@@ -56,6 +56,14 @@ class TransactionStorage:
                     )
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    type TEXT NOT NULL CHECK (type IN ('asset','liability','income','expense','capital','drawings')),
+                    parent_id INTEGER REFERENCES accounts(id)
+                )
+            """)
             # Immutability triggers for journal_entries
             conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS prevent_journal_entry_update
@@ -88,8 +96,34 @@ class TransactionStorage:
             """)
             conn.commit()
 
+    def _ensure_account(self, conn: sqlite3.Connection, account_name: str) -> None:
+        """Validate and auto-create the account and its ancestor chain."""
+        account_name = account_name.lower()
+        acct_type, segments = parse_account_path(account_name)
+        for i in range(1, len(segments) + 1):
+            path = ":".join(segments[:i])
+            existing = conn.execute(
+                "SELECT id FROM accounts WHERE name = ?", (path,)
+            ).fetchone()
+            if existing:
+                continue
+            parent_id = None
+            if i > 1:
+                parent_path = ":".join(segments[: i - 1])
+                parent_row = conn.execute(
+                    "SELECT id FROM accounts WHERE name = ?", (parent_path,)
+                ).fetchone()
+                if parent_row:
+                    parent_id = parent_row[0]
+            conn.execute(
+                "INSERT INTO accounts (name, type, parent_id) VALUES (?, ?, ?)",
+                (path, acct_type, parent_id),
+            )
+
     def add(self, entry: JournalEntry) -> int:
         with self._get_connection() as conn:
+            for item in entry.line_items:
+                self._ensure_account(conn, item.account)
             cursor = conn.execute(
                 "INSERT INTO journal_entries (description, timestamp) VALUES (?, ?)",
                 (entry.description, entry.timestamp.isoformat()),
@@ -100,7 +134,7 @@ class TransactionStorage:
                     "INSERT INTO line_items (journal_entry_id, account, debit, credit) VALUES (?, ?, ?, ?)",
                     (
                         entry_id,
-                        item.account,
+                        item.account.lower(),
                         str(item.debit) if item.debit is not None else None,
                         str(item.credit) if item.credit is not None else None,
                     ),
@@ -127,11 +161,12 @@ class TransactionStorage:
             return self._load_entry(conn, row)
 
     def get_by_account(self, account: str) -> list[JournalEntry]:
+        account = account.lower()
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
             entry_ids = conn.execute(
-                "SELECT DISTINCT journal_entry_id FROM line_items WHERE account = ?",
-                (account,),
+                "SELECT DISTINCT journal_entry_id FROM line_items WHERE account = ? OR account LIKE ?",
+                (account, account + ":%"),
             ).fetchall()
             ids = [r["journal_entry_id"] for r in entry_ids]
             if not ids:
@@ -143,18 +178,53 @@ class TransactionStorage:
             ).fetchall()
             return [self._load_entry(conn, row) for row in entries]
 
-    def get_trial_balance(self) -> dict:
+    def get_accounts(self, account_type: str | None = None) -> list[Account]:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT
-                    account,
-                    SUM(CASE WHEN debit IS NOT NULL THEN CAST(debit AS REAL) ELSE 0 END) as total_debits,
-                    SUM(CASE WHEN credit IS NOT NULL THEN CAST(credit AS REAL) ELSE 0 END) as total_credits
-                FROM line_items
-                GROUP BY account
-                ORDER BY account
-            """).fetchall()
+            if account_type:
+                rows = conn.execute(
+                    "SELECT * FROM accounts WHERE type = ? ORDER BY name",
+                    (account_type,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM accounts ORDER BY name"
+                ).fetchall()
+            return [
+                Account(
+                    id=row["id"],
+                    name=row["name"],
+                    type=row["type"],
+                    parent_id=row["parent_id"],
+                )
+                for row in rows
+            ]
+
+    def get_trial_balance(self, account: str | None = None) -> dict:
+        with self._get_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            if account:
+                account = account.lower()
+                rows = conn.execute("""
+                    SELECT
+                        account,
+                        SUM(CASE WHEN debit IS NOT NULL THEN CAST(debit AS REAL) ELSE 0 END) as total_debits,
+                        SUM(CASE WHEN credit IS NOT NULL THEN CAST(credit AS REAL) ELSE 0 END) as total_credits
+                    FROM line_items
+                    WHERE account = ? OR account LIKE ?
+                    GROUP BY account
+                    ORDER BY account
+                """, (account, account + ":%")).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT
+                        account,
+                        SUM(CASE WHEN debit IS NOT NULL THEN CAST(debit AS REAL) ELSE 0 END) as total_debits,
+                        SUM(CASE WHEN credit IS NOT NULL THEN CAST(credit AS REAL) ELSE 0 END) as total_credits
+                    FROM line_items
+                    GROUP BY account
+                    ORDER BY account
+                """).fetchall()
             accounts = {}
             for row in rows:
                 total_debits = Decimal(str(row["total_debits"]))

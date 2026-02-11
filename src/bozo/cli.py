@@ -60,6 +60,24 @@ def create_parser() -> argparse.ArgumentParser:
     # Summary command
     summary_parser = subparsers.add_parser("summary", help="Show trial balance")
     summary_parser.add_argument(
+        "-a", "--account",
+        help="Scope trial balance to an account subtree",
+    )
+    summary_parser.add_argument(
+        "-d", "--database",
+        type=Path,
+        default=None,
+        help="Path to the database file (default: BOZO_DB env var)",
+    )
+
+    # Accounts command
+    accounts_parser = subparsers.add_parser("accounts", help="List chart of accounts")
+    accounts_parser.add_argument(
+        "--type",
+        dest="account_type",
+        help="Filter by account type (asset, liability, income, expense, capital, drawings)",
+    )
+    accounts_parser.add_argument(
         "-d", "--database",
         type=Path,
         default=None,
@@ -98,7 +116,11 @@ def cmd_record(args, storage: TransactionStorage) -> int:
             LineItem(account=args.credit, credit=amount),
         ],
     )
-    entry_id = storage.add(entry)
+    try:
+        entry_id = storage.add(entry)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     print(f"Recorded entry #{entry_id}: {amount:.2f} - {args.description} [debit: {args.debit}, credit: {args.credit}]")
     return 0
 
@@ -127,27 +149,50 @@ def cmd_list(args, storage: TransactionStorage) -> int:
     return 0
 
 
-def cmd_summary(storage: TransactionStorage) -> int:
+def cmd_summary(args, storage: TransactionStorage) -> int:
     """Handle the summary command."""
-    accounts = storage.get_trial_balance()
+    scope = getattr(args, "account", None)
+    accounts = storage.get_trial_balance(account=scope)
 
     if not accounts:
         print("No journal entries recorded yet.")
         return 0
 
     print("=== Trial Balance ===\n")
-    print(f"{'Account':<20} {'Debits':>12} {'Credits':>12} {'Net':>12}")
-    print("-" * 58)
+    print(f"{'Account':<30} {'Debits':>12} {'Credits':>12} {'Net':>12}")
+    print("-" * 68)
 
     total_debits = Decimal("0")
     total_credits = Decimal("0")
     for account, data in accounts.items():
-        print(f"{account:<20} {data['debits']:>12.2f} {data['credits']:>12.2f} {data['net']:>12.2f}")
+        depth = account.count(":")
+        indent = "  " * depth
+        label = indent + account.split(":")[-1]
+        print(f"{label:<30} {data['debits']:>12.2f} {data['credits']:>12.2f} {data['net']:>12.2f}")
         total_debits += data["debits"]
         total_credits += data["credits"]
 
-    print("-" * 58)
-    print(f"{'TOTAL':<20} {total_debits:>12.2f} {total_credits:>12.2f} {total_debits - total_credits:>12.2f}")
+    print("-" * 68)
+    print(f"{'TOTAL':<30} {total_debits:>12.2f} {total_credits:>12.2f} {total_debits - total_credits:>12.2f}")
+
+    return 0
+
+
+def cmd_accounts(args, storage: TransactionStorage) -> int:
+    """Handle the accounts command."""
+    accounts = storage.get_accounts(account_type=args.account_type)
+
+    if not accounts:
+        print("No accounts found.")
+        return 0
+
+    print(f"{'Account':<30} {'Type':<12}")
+    print("-" * 42)
+    for acct in accounts:
+        depth = acct.name.count(":")
+        indent = "  " * depth
+        label = indent + acct.name.split(":")[-1]
+        print(f"{label:<30} {acct.type:<12}")
 
     return 0
 
@@ -187,7 +232,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list(args, storage)
 
     if args.command == "summary":
-        return cmd_summary(storage)
+        return cmd_summary(args, storage)
+
+    if args.command == "accounts":
+        return cmd_accounts(args, storage)
 
     return 0
 
