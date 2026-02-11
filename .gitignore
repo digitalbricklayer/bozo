@@ -39,5 +39,5 @@ htmlcov/
 .pytest_cache/
 
 # Data files
-*.db
+*.bozo
 *.sqlite

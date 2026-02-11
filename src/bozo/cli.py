@@ -73,7 +73,7 @@ def create_parser() -> argparse.ArgumentParser:
 def cmd_init(args) -> int:
     """Handle the init command."""
     folder = args.folder.resolve()
-    db_path = folder / f"{args.name}.db"
+    db_path = folder / f"{args.name}.bozo"
 
     if db_path.exists():
         print(f"Database already exists at '{db_path}'.")

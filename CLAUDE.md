@@ -24,5 +24,5 @@ Bozo is a CLI tool for recording immutable financial transactions, stored in SQL
 ## Key conventions
 - Transactions are immutable (enforced by SQLite triggers - no updates or deletes)
 - Amounts stored as Decimal (via TEXT in SQLite) for precision
-- Database is a standalone `.db` file; no directory creation on init
+- Database is a standalone `.bozo` file; no directory creation on init
 - CLI uses `--name` and `--folder` for init, `--database`/`-d` for other commands
