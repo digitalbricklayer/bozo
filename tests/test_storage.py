@@ -27,14 +27,22 @@ def make_entry(description="Test", debit_acct="assets:cash", credit_acct="income
     )
 
 
+def create_accounts(storage, *names):
+    """Helper to pre-create accounts before recording transactions."""
+    for name in names:
+        storage.create_account(name)
+
+
 def test_add_entry(storage):
     """Test adding a journal entry."""
+    create_accounts(storage, "assets:cash", "income:revenue")
     entry_id = storage.add(make_entry())
     assert entry_id == 1
 
 
 def test_get_all_entries(storage):
     """Test retrieving all journal entries."""
+    create_accounts(storage, "assets:cash", "income:revenue", "expenses:food")
     storage.add(make_entry("Salary"))
     storage.add(make_entry("Groceries", "expenses:food", "assets:cash", "25.00"))
     entries = storage.get_all()
@@ -43,6 +51,7 @@ def test_get_all_entries(storage):
 
 def test_get_by_id(storage):
     """Test retrieving a journal entry by ID."""
+    create_accounts(storage, "assets:cash", "income:revenue")
     entry_id = storage.add(make_entry("Salary"))
     retrieved = storage.get_by_id(entry_id)
     assert retrieved is not None
@@ -59,6 +68,7 @@ def test_get_by_id_not_found(storage):
 
 def test_get_by_account(storage):
     """Test filtering entries by account."""
+    create_accounts(storage, "assets:cash", "income:revenue", "expenses:food", "expenses:rent")
     storage.add(make_entry("Salary", "assets:cash", "income:revenue", "1000.00"))
     storage.add(make_entry("Groceries", "expenses:food", "assets:cash", "30.00"))
     storage.add(make_entry("Rent", "expenses:rent", "assets:cash", "500.00"))
@@ -75,6 +85,7 @@ def test_get_by_account(storage):
 
 def test_get_by_account_prefix(storage):
     """Test that get_by_account matches subtrees."""
+    create_accounts(storage, "assets:bank:checking", "assets:cash", "income:revenue", "expenses:food")
     storage.add(make_entry("Salary", "assets:bank:checking", "income:revenue", "1000.00"))
     storage.add(make_entry("Groceries", "expenses:food", "assets:bank:checking", "30.00"))
     storage.add(make_entry("Petty cash", "assets:cash", "assets:bank:checking", "50.00"))
@@ -99,6 +110,7 @@ def test_get_by_account_empty(storage):
 
 def test_immutable_no_delete_journal_entry(storage):
     """Test that journal entries cannot be deleted."""
+    create_accounts(storage, "assets:cash", "income:revenue")
     entry_id = storage.add(make_entry())
     with storage._get_connection() as conn:
         try:
@@ -111,6 +123,7 @@ def test_immutable_no_delete_journal_entry(storage):
 
 def test_immutable_no_update_journal_entry(storage):
     """Test that journal entries cannot be modified."""
+    create_accounts(storage, "assets:cash", "income:revenue")
     entry_id = storage.add(make_entry())
     with storage._get_connection() as conn:
         try:
@@ -125,6 +138,7 @@ def test_immutable_no_update_journal_entry(storage):
 
 def test_immutable_no_delete_line_item(storage):
     """Test that line items cannot be deleted."""
+    create_accounts(storage, "assets:cash", "income:revenue")
     storage.add(make_entry())
     with storage._get_connection() as conn:
         try:
@@ -136,6 +150,7 @@ def test_immutable_no_delete_line_item(storage):
 
 def test_immutable_no_update_line_item(storage):
     """Test that line items cannot be modified."""
+    create_accounts(storage, "assets:cash", "income:revenue")
     storage.add(make_entry())
     with storage._get_connection() as conn:
         try:
@@ -147,6 +162,7 @@ def test_immutable_no_update_line_item(storage):
 
 def test_get_trial_balance(storage):
     """Test trial balance calculation."""
+    create_accounts(storage, "assets:cash", "income:revenue", "expenses:food", "expenses:utilities")
     storage.add(make_entry("Salary", "assets:cash", "income:revenue", "1000.00"))
     storage.add(make_entry("Groceries", "expenses:food", "assets:cash", "50.00"))
     storage.add(make_entry("Utilities", "expenses:utilities", "assets:cash", "100.00"))
@@ -172,6 +188,7 @@ def test_get_trial_balance(storage):
 
 def test_trial_balance_scoped(storage):
     """Test trial balance scoped to an account subtree."""
+    create_accounts(storage, "assets:cash", "income:revenue", "expenses:food")
     storage.add(make_entry("Salary", "assets:cash", "income:revenue", "1000.00"))
     storage.add(make_entry("Groceries", "expenses:food", "assets:cash", "50.00"))
 
@@ -188,6 +205,7 @@ def test_trial_balance_empty(storage):
 
 def test_trial_balance_debits_equal_credits(storage):
     """Test that total debits always equal total credits."""
+    create_accounts(storage, "assets:cash", "income:revenue", "expenses:food")
     storage.add(make_entry("Salary", "assets:cash", "income:revenue", "1000.00"))
     storage.add(make_entry("Groceries", "expenses:food", "assets:cash", "50.00"))
 
@@ -211,24 +229,48 @@ def test_init_database(tmp_path):
     db_path = tmp_path / "ledger.bozo"
     storage = TransactionStorage.init_database(db_path)
     assert db_path.exists()
+    create_accounts(storage, "assets:cash", "income:revenue")
     storage.add(make_entry())
     assert len(storage.get_all()) == 1
 
 
-def test_account_auto_creation(storage):
-    """Test that accounts are auto-created in the accounts table."""
-    storage.add(make_entry("Test", "assets:bank:checking", "income:salary", "100.00"))
+def test_create_account_creates_ancestor_chain(storage):
+    """Test that create_account creates the full ancestor chain."""
+    storage.create_account("assets:bank:checking")
     accounts = storage.get_accounts()
     names = [a.name for a in accounts]
     assert "assets" in names
     assert "assets:bank" in names
     assert "assets:bank:checking" in names
+
+
+def test_create_account_duplicate_raises(storage):
+    """Test that creating an already-existing account raises ValueError."""
+    storage.create_account("assets:cash")
+    with pytest.raises(ValueError, match="already exists"):
+        storage.create_account("assets:cash")
+
+
+def test_record_unknown_account_raises(storage):
+    """Test that recording with an unknown non-root account raises ValueError."""
+    with pytest.raises(ValueError, match="does not exist"):
+        storage.add(make_entry("Bad", "expenses:foood", "assets:cash", "10.00"))
+
+
+def test_root_accounts_auto_created_during_transaction(storage):
+    """Test that root accounts are still auto-created during transactions."""
+    create_accounts(storage, "assets:cash", "income:revenue")
+    storage.add(make_entry("Test", "assets:cash", "income:revenue", "100.00"))
+    accounts = storage.get_accounts()
+    names = [a.name for a in accounts]
+    # Root accounts should exist (auto-created or via create_account ancestors)
+    assert "assets" in names
     assert "income" in names
-    assert "income:salary" in names
 
 
 def test_account_hierarchy_parent_ids(storage):
     """Test that parent_id is set correctly in account hierarchy."""
+    create_accounts(storage, "assets:bank:checking", "income:revenue")
     storage.add(make_entry("Test", "assets:bank:checking", "income:revenue", "100.00"))
     accounts = storage.get_accounts()
     by_name = {a.name: a for a in accounts}
@@ -240,6 +282,7 @@ def test_account_hierarchy_parent_ids(storage):
 
 def test_account_types(storage):
     """Test that account types are inferred from root segment."""
+    create_accounts(storage, "assets:cash", "liabilities:loan")
     storage.add(make_entry("Test", "assets:cash", "liabilities:loan", "100.00"))
     accounts = storage.get_accounts()
     by_name = {a.name: a for a in accounts}
@@ -252,6 +295,7 @@ def test_account_types(storage):
 
 def test_get_accounts_filtered_by_type(storage):
     """Test filtering accounts by type."""
+    create_accounts(storage, "assets:cash", "income:revenue")
     storage.add(make_entry("Test", "assets:cash", "income:revenue", "100.00"))
     asset_accounts = storage.get_accounts(account_type="asset")
     assert all(a.type == "asset" for a in asset_accounts)
@@ -266,6 +310,8 @@ def test_invalid_root_rejected(storage):
 
 def test_account_names_lowercased(storage):
     """Test that account names are stored lowercase."""
+    storage.create_account("Assets:Cash")
+    storage.create_account("Income:Revenue")
     storage.add(make_entry("Test", "Assets:Cash", "Income:Revenue", "100.00"))
     accounts = storage.get_accounts()
     names = [a.name for a in accounts]

@@ -96,29 +96,69 @@ class TransactionStorage:
             """)
             conn.commit()
 
-    def _ensure_account(self, conn: sqlite3.Connection, account_name: str) -> None:
-        """Validate and auto-create the account and its ancestor chain."""
+    def create_account(self, account_name: str) -> None:
+        """Create an account and any missing ancestors in its chain.
+
+        Root accounts are created implicitly as needed.
+        Raises ValueError if the leaf account already exists.
+        """
         account_name = account_name.lower()
         acct_type, segments = parse_account_path(account_name)
-        for i in range(1, len(segments) + 1):
-            path = ":".join(segments[:i])
+        with self._get_connection() as conn:
+            # Check if the leaf account already exists
+            leaf_path = ":".join(segments)
             existing = conn.execute(
-                "SELECT id FROM accounts WHERE name = ?", (path,)
+                "SELECT id FROM accounts WHERE name = ?", (leaf_path,)
             ).fetchone()
             if existing:
-                continue
-            parent_id = None
-            if i > 1:
-                parent_path = ":".join(segments[: i - 1])
-                parent_row = conn.execute(
-                    "SELECT id FROM accounts WHERE name = ?", (parent_path,)
+                raise ValueError(f"Account '{leaf_path}' already exists.")
+            # Create the full ancestor chain
+            for i in range(1, len(segments) + 1):
+                path = ":".join(segments[:i])
+                row = conn.execute(
+                    "SELECT id FROM accounts WHERE name = ?", (path,)
                 ).fetchone()
-                if parent_row:
-                    parent_id = parent_row[0]
+                if row:
+                    continue
+                parent_id = None
+                if i > 1:
+                    parent_path = ":".join(segments[: i - 1])
+                    parent_row = conn.execute(
+                        "SELECT id FROM accounts WHERE name = ?", (parent_path,)
+                    ).fetchone()
+                    if parent_row:
+                        parent_id = parent_row[0]
+                conn.execute(
+                    "INSERT INTO accounts (name, type, parent_id) VALUES (?, ?, ?)",
+                    (path, acct_type, parent_id),
+                )
+            conn.commit()
+
+    def _ensure_account(self, conn: sqlite3.Connection, account_name: str) -> None:
+        """Validate that an account exists. Auto-creates root accounts only."""
+        account_name = account_name.lower()
+        acct_type, segments = parse_account_path(account_name)
+        # Auto-create root account if missing
+        root = segments[0]
+        existing = conn.execute(
+            "SELECT id FROM accounts WHERE name = ?", (root,)
+        ).fetchone()
+        if not existing:
             conn.execute(
                 "INSERT INTO accounts (name, type, parent_id) VALUES (?, ?, ?)",
-                (path, acct_type, parent_id),
+                (root, acct_type, None),
             )
+        # For non-root accounts, verify the exact account exists
+        if len(segments) > 1:
+            full_path = ":".join(segments)
+            existing = conn.execute(
+                "SELECT id FROM accounts WHERE name = ?", (full_path,)
+            ).fetchone()
+            if not existing:
+                raise ValueError(
+                    f"Account '{full_path}' does not exist. "
+                    f"Create it with: bozo add-account {full_path}"
+                )
 
     def add(self, entry: JournalEntry) -> int:
         with self._get_connection() as conn:

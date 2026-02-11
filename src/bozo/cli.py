@@ -70,6 +70,16 @@ def create_parser() -> argparse.ArgumentParser:
         help="Path to the database file (default: BOZO_DB env var)",
     )
 
+    # Add account command
+    add_account_parser = subparsers.add_parser("add-account", help="Create a new account")
+    add_account_parser.add_argument("name", help="Account name (e.g. assets:bank:checking)")
+    add_account_parser.add_argument(
+        "-d", "--database",
+        type=Path,
+        default=None,
+        help="Path to the database file (default: BOZO_DB env var)",
+    )
+
     # Accounts command
     accounts_parser = subparsers.add_parser("accounts", help="List chart of accounts")
     accounts_parser.add_argument(
@@ -102,6 +112,17 @@ def cmd_init(args) -> int:
 
     TransactionStorage.init_database(db_path)
     print(f"Initialized database at '{db_path}'.")
+    return 0
+
+
+def cmd_add_account(args, storage: TransactionStorage) -> int:
+    """Handle the add-account command."""
+    try:
+        storage.create_account(args.name)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print(f"Created account '{args.name.lower()}'.")
     return 0
 
 
@@ -224,6 +245,9 @@ def main(argv: list[str] | None = None) -> int:
     except DatabaseNotInitializedError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+    if args.command == "add-account":
+        return cmd_add_account(args, storage)
 
     if args.command == "record":
         return cmd_record(args, storage)
