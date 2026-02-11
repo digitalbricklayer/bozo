@@ -18,24 +18,40 @@ bozo init --name ledger --folder .
 
 This creates `ledger.bozo` in the current directory.
 
+### Set the default database
+
+Instead of passing `-d` to every command, set the `BOZO_DB` environment variable:
+
+```bash
+export BOZO_DB=ledger.bozo
+```
+
+All commands below will use this database unless `-d` is specified.
+
 ### Record a transaction
 
 ```bash
+bozo record 50.00 "Freelance payment" -c income
+bozo record -25.50 "Groceries" -c food
+```
+
+Or specify the database explicitly:
+
+```bash
 bozo record 50.00 "Freelance payment" -c income -d ledger.bozo
-bozo record -25.50 "Groceries" -c food -d ledger.bozo
 ```
 
 ### List transactions
 
 ```bash
-bozo list -d ledger.bozo
-bozo list -c food -d ledger.bozo
+bozo list
+bozo list -c food
 ```
 
 ### View summary
 
 ```bash
-bozo summary -d ledger.bozo
+bozo summary
 ```
 
 ## Design
