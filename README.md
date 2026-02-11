@@ -23,7 +23,7 @@ This creates `ledger.bozo` in the current directory.
 Instead of passing `-d` to every command, set the `BOZO_DB` environment variable:
 
 ```bash
-export BOZO_DB=ledger.bozo
+export BOZO_DB=~/finances/ledger.bozo
 ```
 
 All commands below will use this database unless `-d` is specified.
