@@ -4,18 +4,19 @@ import argparse
 import os
 import sys
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from bozo import __version__
 from bozo.storage import DatabaseNotInitializedError, TransactionStorage
-from bozo.transaction import Transaction
+from bozo.transaction import JournalEntry, LineItem
 
 
 def create_parser() -> argparse.ArgumentParser:
     """Create the argument parser for the CLI."""
     parser = argparse.ArgumentParser(
         prog="bozo",
-        description="A command line tool for recording financial transactions",
+        description="A double-entry accounting CLI tool",
     )
     parser.add_argument(
         "-v", "--version",
@@ -30,15 +31,12 @@ def create_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--name", required=True, help="Name of the database file (e.g. ledger)")
     init_parser.add_argument("--folder", type=Path, default=Path("."), help="Folder where the database is created (default: current directory)")
 
-    # Record transaction command
-    record_parser = subparsers.add_parser("record", help="Record a new transaction")
-    record_parser.add_argument("amount", type=float, help="Transaction amount (positive=income, negative=expense)")
-    record_parser.add_argument("description", help="Transaction description")
-    record_parser.add_argument(
-        "-c", "--category",
-        default="uncategorized",
-        help="Transaction category",
-    )
+    # Record journal entry command
+    record_parser = subparsers.add_parser("record", help="Record a journal entry")
+    record_parser.add_argument("amount", type=float, help="Transaction amount")
+    record_parser.add_argument("description", help="Entry description")
+    record_parser.add_argument("--debit", required=True, help="Account to debit")
+    record_parser.add_argument("--credit", required=True, help="Account to credit")
     record_parser.add_argument(
         "-d", "--database",
         type=Path,
@@ -46,11 +44,11 @@ def create_parser() -> argparse.ArgumentParser:
         help="Path to the database file (default: BOZO_DB env var)",
     )
 
-    # List transactions command
-    list_parser = subparsers.add_parser("list", help="List all transactions")
+    # List entries command
+    list_parser = subparsers.add_parser("list", help="List journal entries")
     list_parser.add_argument(
-        "-c", "--category",
-        help="Filter by category",
+        "-a", "--account",
+        help="Filter by account",
     )
     list_parser.add_argument(
         "-d", "--database",
@@ -60,7 +58,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # Summary command
-    summary_parser = subparsers.add_parser("summary", help="Show transaction summary")
+    summary_parser = subparsers.add_parser("summary", help="Show trial balance")
     summary_parser.add_argument(
         "-d", "--database",
         type=Path,
@@ -91,57 +89,65 @@ def cmd_init(args) -> int:
 
 def cmd_record(args, storage: TransactionStorage) -> int:
     """Handle the record command."""
-    transaction = Transaction(
-        amount=args.amount,
+    amount = Decimal(str(args.amount))
+    entry = JournalEntry(
         description=args.description,
-        category=args.category,
         timestamp=datetime.now(),
+        line_items=[
+            LineItem(account=args.debit, debit=amount),
+            LineItem(account=args.credit, credit=amount),
+        ],
     )
-    tx_id = storage.add(transaction)
-    sign = "+" if args.amount >= 0 else ""
-    print(f"Recorded transaction #{tx_id}: {sign}{args.amount:.2f} - {args.description} [{args.category}]")
+    entry_id = storage.add(entry)
+    print(f"Recorded entry #{entry_id}: {amount:.2f} - {args.description} [debit: {args.debit}, credit: {args.credit}]")
     return 0
 
 
 def cmd_list(args, storage: TransactionStorage) -> int:
     """Handle the list command."""
-    if args.category:
-        transactions = storage.get_by_category(args.category)
+    if args.account:
+        entries = storage.get_by_account(args.account)
     else:
-        transactions = storage.get_all()
+        entries = storage.get_all()
 
-    if not transactions:
-        print("No transactions found.")
+    if not entries:
+        print("No journal entries found.")
         return 0
 
-    print(f"{'ID':<6} {'Date':<12} {'Amount':>12} {'Category':<15} Description")
-    print("-" * 70)
-    for tx in transactions:
-        sign = "+" if tx.amount >= 0 else ""
-        print(f"{tx.id:<6} {tx.timestamp.strftime('%Y-%m-%d'):<12} {sign}{tx.amount:>11.2f} {tx.category:<15} {tx.description}")
+    print(f"{'ID':<6} {'Date':<12} {'Description':<20} {'Debit Acct':<15} {'Credit Acct':<15} {'Amount':>10}")
+    print("-" * 80)
+    for entry in entries:
+        debit_item = next((li for li in entry.line_items if li.debit is not None), None)
+        credit_item = next((li for li in entry.line_items if li.credit is not None), None)
+        amount = debit_item.debit if debit_item else Decimal("0")
+        debit_acct = debit_item.account if debit_item else ""
+        credit_acct = credit_item.account if credit_item else ""
+        print(f"{entry.id:<6} {entry.timestamp.strftime('%Y-%m-%d'):<12} {entry.description:<20} {debit_acct:<15} {credit_acct:<15} {amount:>10.2f}")
 
     return 0
 
 
 def cmd_summary(storage: TransactionStorage) -> int:
     """Handle the summary command."""
-    summary = storage.get_summary()
+    accounts = storage.get_trial_balance()
 
-    if summary["count"] == 0:
-        print("No transactions recorded yet.")
+    if not accounts:
+        print("No journal entries recorded yet.")
         return 0
 
-    print("=== Transaction Summary ===\n")
-    print(f"Total transactions: {summary['count']}")
-    print(f"Income:   +{summary['income']:>10.2f}")
-    print(f"Expenses:  {summary['expenses']:>10.2f}")
-    print(f"Balance:   {summary['balance']:>10.2f}")
+    print("=== Trial Balance ===\n")
+    print(f"{'Account':<20} {'Debits':>12} {'Credits':>12} {'Net':>12}")
+    print("-" * 58)
 
-    if summary["by_category"]:
-        print("\n--- By Category ---")
-        for category, data in summary["by_category"].items():
-            sign = "+" if data["total"] >= 0 else ""
-            print(f"  {category:<15} {sign}{data['total']:>10.2f}  ({data['count']} transactions)")
+    total_debits = Decimal("0")
+    total_credits = Decimal("0")
+    for account, data in accounts.items():
+        print(f"{account:<20} {data['debits']:>12.2f} {data['credits']:>12.2f} {data['net']:>12.2f}")
+        total_debits += data["debits"]
+        total_credits += data["credits"]
+
+    print("-" * 58)
+    print(f"{'TOTAL':<20} {total_debits:>12.2f} {total_credits:>12.2f} {total_debits - total_credits:>12.2f}")
 
     return 0
 
@@ -168,7 +174,6 @@ def main(argv: list[str] | None = None) -> int:
             print("Error: No database specified. Use -d or set BOZO_DB environment variable.", file=sys.stderr)
             return 1
 
-    # Commands that require an initialized database
     try:
         storage = TransactionStorage(db_path)
     except DatabaseNotInitializedError as e:

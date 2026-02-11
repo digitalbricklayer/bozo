@@ -3,56 +3,45 @@
 from datetime import datetime
 from decimal import Decimal
 
-from bozo.transaction import Transaction
+from bozo.transaction import JournalEntry, LineItem
 
 
-def test_transaction_creation():
-    """Test creating a transaction."""
-    t = Transaction(
-        amount=Decimal("100.50"),
-        description="Groceries",
-        category="food",
+def test_line_item_debit():
+    """Test creating a debit line item."""
+    item = LineItem(account="cash", debit=Decimal("100.00"))
+    assert item.account == "cash"
+    assert item.debit == Decimal("100.00")
+    assert item.credit is None
+
+
+def test_line_item_credit():
+    """Test creating a credit line item."""
+    item = LineItem(account="revenue", credit=Decimal("100.00"))
+    assert item.account == "revenue"
+    assert item.debit is None
+    assert item.credit == Decimal("100.00")
+
+
+def test_journal_entry_creation():
+    """Test creating a journal entry with line items."""
+    entry = JournalEntry(
+        description="Salary",
         timestamp=datetime(2024, 1, 15, 10, 30),
+        line_items=[
+            LineItem(account="cash", debit=Decimal("1000.00")),
+            LineItem(account="revenue", credit=Decimal("1000.00")),
+        ],
     )
-    assert t.amount == Decimal("100.50")
-    assert t.description == "Groceries"
-    assert t.category == "food"
+    assert entry.description == "Salary"
+    assert len(entry.line_items) == 2
+    assert entry.line_items[0].debit == Decimal("1000.00")
+    assert entry.line_items[1].credit == Decimal("1000.00")
 
 
-def test_transaction_amount_conversion():
-    """Test that float amounts are converted to Decimal."""
-    t = Transaction(
-        amount=100.50,
-        description="Test",
-        category="test",
-        timestamp=datetime.now(),
+def test_journal_entry_default_line_items():
+    """Test that line_items defaults to empty list."""
+    entry = JournalEntry(
+        description="Empty",
+        timestamp=datetime(2024, 1, 1),
     )
-    assert isinstance(t.amount, Decimal)
-    assert t.amount == Decimal("100.5")
-
-
-def test_transaction_to_dict():
-    """Test converting transaction to dictionary."""
-    t = Transaction(
-        amount=Decimal("50.00"),
-        description="Coffee",
-        category="food",
-        timestamp=datetime(2024, 1, 15, 10, 30),
-    )
-    d = t.to_dict()
-    assert d["amount"] == "50.00"
-    assert d["description"] == "Coffee"
-    assert d["category"] == "food"
-
-
-def test_transaction_from_dict():
-    """Test creating transaction from dictionary."""
-    data = {
-        "amount": "75.25",
-        "description": "Book",
-        "category": "entertainment",
-        "timestamp": "2024-01-15T10:30:00",
-    }
-    t = Transaction.from_dict(data)
-    assert t.amount == Decimal("75.25")
-    assert t.description == "Book"
+    assert entry.line_items == []

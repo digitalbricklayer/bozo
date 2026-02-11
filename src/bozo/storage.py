@@ -1,11 +1,12 @@
-"""SQLite storage for transactions."""
+"""SQLite storage for double-entry journal entries."""
 
 import sqlite3
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from bozo.transaction import Transaction
+from bozo.transaction import JournalEntry, LineItem
+
 
 class DatabaseNotInitializedError(Exception):
     """Raised when trying to use a database that hasn't been initialized."""
@@ -13,17 +14,10 @@ class DatabaseNotInitializedError(Exception):
 
 
 class TransactionStorage:
-    """SQLite-based storage for transactions."""
+    """SQLite-based storage for journal entries."""
 
     def __init__(self, db_path: Path, require_init: bool = True):
-        """Initialize storage with a database file path.
-
-        Args:
-            db_path: Full path to the SQLite database file.
-            require_init: If True, raise error if database doesn't exist.
-        """
         self.db_path = Path(db_path)
-
         if require_init and not self.db_path.exists():
             raise DatabaseNotInitializedError(
                 f"Database not found at '{self.db_path}'. "
@@ -32,142 +26,162 @@ class TransactionStorage:
 
     @classmethod
     def init_database(cls, db_path: Path) -> "TransactionStorage":
-        """Initialize a new database at the given path.
-
-        Args:
-            db_path: Full path to the SQLite database file.
-
-        Returns:
-            TransactionStorage instance for the new database.
-        """
         db_path = Path(db_path)
         storage = cls(db_path, require_init=False)
         storage._init_db()
         return storage
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get a database connection."""
         return sqlite3.connect(self.db_path)
 
     def _init_db(self) -> None:
-        """Initialize the database schema with immutable ledger constraints."""
         with self._get_connection() as conn:
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
+                CREATE TABLE IF NOT EXISTS journal_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    amount TEXT NOT NULL,
                     description TEXT NOT NULL,
-                    category TEXT NOT NULL,
                     timestamp TEXT NOT NULL
                 )
             """)
-            # Prevent updates to transactions (immutable ledger)
             conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS prevent_transaction_update
-                BEFORE UPDATE ON transactions
+                CREATE TABLE IF NOT EXISTS line_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    journal_entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+                    account TEXT NOT NULL,
+                    debit TEXT,
+                    credit TEXT,
+                    CHECK (
+                        (debit IS NOT NULL AND credit IS NULL) OR
+                        (debit IS NULL AND credit IS NOT NULL)
+                    )
+                )
+            """)
+            # Immutability triggers for journal_entries
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS prevent_journal_entry_update
+                BEFORE UPDATE ON journal_entries
                 BEGIN
-                    SELECT RAISE(ABORT, 'Transactions cannot be modified');
+                    SELECT RAISE(ABORT, 'Journal entries cannot be modified');
                 END
             """)
-            # Prevent deletes from transactions (immutable ledger)
             conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS prevent_transaction_delete
-                BEFORE DELETE ON transactions
+                CREATE TRIGGER IF NOT EXISTS prevent_journal_entry_delete
+                BEFORE DELETE ON journal_entries
                 BEGIN
-                    SELECT RAISE(ABORT, 'Transactions cannot be deleted');
+                    SELECT RAISE(ABORT, 'Journal entries cannot be deleted');
+                END
+            """)
+            # Immutability triggers for line_items
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS prevent_line_item_update
+                BEFORE UPDATE ON line_items
+                BEGIN
+                    SELECT RAISE(ABORT, 'Line items cannot be modified');
+                END
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS prevent_line_item_delete
+                BEFORE DELETE ON line_items
+                BEGIN
+                    SELECT RAISE(ABORT, 'Line items cannot be deleted');
                 END
             """)
             conn.commit()
 
-    def add(self, transaction: Transaction) -> int:
-        """Add a transaction and return its ID."""
+    def add(self, entry: JournalEntry) -> int:
         with self._get_connection() as conn:
             cursor = conn.execute(
-                """
-                INSERT INTO transactions (amount, description, category, timestamp)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    str(transaction.amount),
-                    transaction.description,
-                    transaction.category,
-                    transaction.timestamp.isoformat(),
-                ),
+                "INSERT INTO journal_entries (description, timestamp) VALUES (?, ?)",
+                (entry.description, entry.timestamp.isoformat()),
             )
+            entry_id = cursor.lastrowid
+            for item in entry.line_items:
+                conn.execute(
+                    "INSERT INTO line_items (journal_entry_id, account, debit, credit) VALUES (?, ?, ?, ?)",
+                    (
+                        entry_id,
+                        item.account,
+                        str(item.debit) if item.debit is not None else None,
+                        str(item.credit) if item.credit is not None else None,
+                    ),
+                )
             conn.commit()
-            return cursor.lastrowid
+            return entry_id
 
-    def get_all(self) -> list[Transaction]:
-        """Get all transactions."""
+    def get_all(self) -> list[JournalEntry]:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM transactions ORDER BY timestamp DESC"
-            )
-            return [self._row_to_transaction(row) for row in cursor.fetchall()]
+            entries = conn.execute(
+                "SELECT * FROM journal_entries ORDER BY timestamp DESC"
+            ).fetchall()
+            return [self._load_entry(conn, row) for row in entries]
 
-    def get_by_id(self, transaction_id: int) -> Transaction | None:
-        """Get a transaction by ID."""
+    def get_by_id(self, entry_id: int) -> JournalEntry | None:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM transactions WHERE id = ?",
-                (transaction_id,),
-            )
-            row = cursor.fetchone()
-            return self._row_to_transaction(row) if row else None
+            row = conn.execute(
+                "SELECT * FROM journal_entries WHERE id = ?", (entry_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return self._load_entry(conn, row)
 
-    def get_by_category(self, category: str) -> list[Transaction]:
-        """Get all transactions in a category."""
+    def get_by_account(self, account: str) -> list[JournalEntry]:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute(
-                "SELECT * FROM transactions WHERE category = ? ORDER BY timestamp DESC",
-                (category,),
-            )
-            return [self._row_to_transaction(row) for row in cursor.fetchall()]
+            entry_ids = conn.execute(
+                "SELECT DISTINCT journal_entry_id FROM line_items WHERE account = ?",
+                (account,),
+            ).fetchall()
+            ids = [r["journal_entry_id"] for r in entry_ids]
+            if not ids:
+                return []
+            placeholders = ",".join("?" * len(ids))
+            entries = conn.execute(
+                f"SELECT * FROM journal_entries WHERE id IN ({placeholders}) ORDER BY timestamp DESC",
+                ids,
+            ).fetchall()
+            return [self._load_entry(conn, row) for row in entries]
 
-    def get_summary(self) -> dict:
-        """Get a summary of all transactions."""
+    def get_trial_balance(self) -> dict:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
-
-            # Total income and expenses
-            cursor = conn.execute("""
+            rows = conn.execute("""
                 SELECT
-                    SUM(CASE WHEN CAST(amount AS REAL) > 0 THEN CAST(amount AS REAL) ELSE 0 END) as income,
-                    SUM(CASE WHEN CAST(amount AS REAL) < 0 THEN CAST(amount AS REAL) ELSE 0 END) as expenses,
-                    COUNT(*) as count
-                FROM transactions
-            """)
-            row = cursor.fetchone()
+                    account,
+                    SUM(CASE WHEN debit IS NOT NULL THEN CAST(debit AS REAL) ELSE 0 END) as total_debits,
+                    SUM(CASE WHEN credit IS NOT NULL THEN CAST(credit AS REAL) ELSE 0 END) as total_credits
+                FROM line_items
+                GROUP BY account
+                ORDER BY account
+            """).fetchall()
+            accounts = {}
+            for row in rows:
+                total_debits = Decimal(str(row["total_debits"]))
+                total_credits = Decimal(str(row["total_credits"]))
+                accounts[row["account"]] = {
+                    "debits": total_debits,
+                    "credits": total_credits,
+                    "net": total_debits - total_credits,
+                }
+            return accounts
 
-            # By category
-            cursor = conn.execute("""
-                SELECT category, SUM(CAST(amount AS REAL)) as total, COUNT(*) as count
-                FROM transactions
-                GROUP BY category
-                ORDER BY total DESC
-            """)
-            categories = {
-                r["category"]: {"total": Decimal(str(r["total"] or 0)), "count": r["count"]}
-                for r in cursor.fetchall()
-            }
-
-            return {
-                "income": Decimal(str(row["income"] or 0)),
-                "expenses": Decimal(str(row["expenses"] or 0)),
-                "balance": Decimal(str((row["income"] or 0) + (row["expenses"] or 0))),
-                "count": row["count"],
-                "by_category": categories,
-            }
-
-    def _row_to_transaction(self, row: sqlite3.Row) -> Transaction:
-        """Convert a database row to a Transaction."""
-        return Transaction(
+    def _load_entry(self, conn: sqlite3.Connection, row: sqlite3.Row) -> JournalEntry:
+        items = conn.execute(
+            "SELECT * FROM line_items WHERE journal_entry_id = ?", (row["id"],)
+        ).fetchall()
+        line_items = [
+            LineItem(
+                id=item["id"],
+                account=item["account"],
+                debit=Decimal(item["debit"]) if item["debit"] is not None else None,
+                credit=Decimal(item["credit"]) if item["credit"] is not None else None,
+            )
+            for item in items
+        ]
+        return JournalEntry(
             id=row["id"],
-            amount=Decimal(row["amount"]),
             description=row["description"],
-            category=row["category"],
             timestamp=datetime.fromisoformat(row["timestamp"]),
+            line_items=line_items,
         )

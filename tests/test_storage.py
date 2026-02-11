@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from bozo.storage import DatabaseNotInitializedError, TransactionStorage
-from bozo.transaction import Transaction
+from bozo.transaction import JournalEntry, LineItem
 
 
 @pytest.fixture
@@ -15,148 +15,152 @@ def storage(tmp_path):
     return TransactionStorage.init_database(tmp_path / "test.bozo")
 
 
-@pytest.fixture
-def sample_transaction():
-    """Create a sample transaction."""
-    return Transaction(
-        amount=Decimal("50.00"),
-        description="Test purchase",
-        category="test",
+def make_entry(description="Test", debit_acct="cash", credit_acct="revenue", amount="50.00"):
+    """Helper to create a journal entry."""
+    return JournalEntry(
+        description=description,
         timestamp=datetime(2024, 1, 15, 10, 30),
+        line_items=[
+            LineItem(account=debit_acct, debit=Decimal(amount)),
+            LineItem(account=credit_acct, credit=Decimal(amount)),
+        ],
     )
 
 
-def test_add_transaction(storage, sample_transaction):
-    """Test adding a transaction."""
-    tx_id = storage.add(sample_transaction)
-    assert tx_id == 1
+def test_add_entry(storage):
+    """Test adding a journal entry."""
+    entry_id = storage.add(make_entry())
+    assert entry_id == 1
 
 
-def test_get_all_transactions(storage, sample_transaction):
-    """Test retrieving all transactions."""
-    storage.add(sample_transaction)
-    storage.add(Transaction(
-        amount=Decimal("-25.00"),
-        description="Another purchase",
-        category="food",
-        timestamp=datetime(2024, 1, 16, 12, 0),
-    ))
-
-    transactions = storage.get_all()
-    assert len(transactions) == 2
+def test_get_all_entries(storage):
+    """Test retrieving all journal entries."""
+    storage.add(make_entry("Salary"))
+    storage.add(make_entry("Groceries", "expenses", "cash", "25.00"))
+    entries = storage.get_all()
+    assert len(entries) == 2
 
 
-def test_get_by_id(storage, sample_transaction):
-    """Test retrieving a transaction by ID."""
-    tx_id = storage.add(sample_transaction)
-    retrieved = storage.get_by_id(tx_id)
-
+def test_get_by_id(storage):
+    """Test retrieving a journal entry by ID."""
+    entry_id = storage.add(make_entry("Salary"))
+    retrieved = storage.get_by_id(entry_id)
     assert retrieved is not None
-    assert retrieved.amount == sample_transaction.amount
-    assert retrieved.description == sample_transaction.description
+    assert retrieved.description == "Salary"
+    assert len(retrieved.line_items) == 2
+    assert retrieved.line_items[0].debit == Decimal("50.00")
+    assert retrieved.line_items[1].credit == Decimal("50.00")
 
 
 def test_get_by_id_not_found(storage):
-    """Test retrieving a non-existent transaction."""
-    retrieved = storage.get_by_id(999)
-    assert retrieved is None
+    """Test retrieving a non-existent entry."""
+    assert storage.get_by_id(999) is None
 
 
-def test_get_by_category(storage):
-    """Test filtering transactions by category."""
-    storage.add(Transaction(
-        amount=Decimal("100.00"),
-        description="Salary",
-        category="income",
-        timestamp=datetime(2024, 1, 1),
-    ))
-    storage.add(Transaction(
-        amount=Decimal("-30.00"),
-        description="Groceries",
-        category="food",
-        timestamp=datetime(2024, 1, 2),
-    ))
-    storage.add(Transaction(
-        amount=Decimal("-15.00"),
-        description="Lunch",
-        category="food",
-        timestamp=datetime(2024, 1, 3),
-    ))
+def test_get_by_account(storage):
+    """Test filtering entries by account."""
+    storage.add(make_entry("Salary", "cash", "revenue", "1000.00"))
+    storage.add(make_entry("Groceries", "expenses", "cash", "30.00"))
+    storage.add(make_entry("Rent", "expenses", "cash", "500.00"))
 
-    food_transactions = storage.get_by_category("food")
-    assert len(food_transactions) == 2
-    assert all(tx.category == "food" for tx in food_transactions)
+    cash_entries = storage.get_by_account("cash")
+    assert len(cash_entries) == 3  # cash appears in all three
+
+    expenses_entries = storage.get_by_account("expenses")
+    assert len(expenses_entries) == 2
+
+    revenue_entries = storage.get_by_account("revenue")
+    assert len(revenue_entries) == 1
 
 
-def test_transaction_immutable_no_delete(storage, sample_transaction):
-    """Test that transactions cannot be deleted (immutable ledger)."""
-    tx_id = storage.add(sample_transaction)
+def test_get_by_account_empty(storage):
+    """Test filtering by non-existent account."""
+    assert storage.get_by_account("nonexistent") == []
+
+
+def test_immutable_no_delete_journal_entry(storage):
+    """Test that journal entries cannot be deleted."""
+    entry_id = storage.add(make_entry())
     with storage._get_connection() as conn:
         try:
-            conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            conn.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
             assert False, "Delete should have been prevented"
         except Exception as e:
             assert "cannot be deleted" in str(e)
-    # Verify transaction still exists
-    assert storage.get_by_id(tx_id) is not None
+    assert storage.get_by_id(entry_id) is not None
 
 
-def test_transaction_immutable_no_update(storage, sample_transaction):
-    """Test that transactions cannot be modified (immutable ledger)."""
-    tx_id = storage.add(sample_transaction)
+def test_immutable_no_update_journal_entry(storage):
+    """Test that journal entries cannot be modified."""
+    entry_id = storage.add(make_entry())
     with storage._get_connection() as conn:
         try:
             conn.execute(
-                "UPDATE transactions SET amount = ? WHERE id = ?",
-                ("999.99", tx_id),
+                "UPDATE journal_entries SET description = ? WHERE id = ?",
+                ("hacked", entry_id),
             )
             assert False, "Update should have been prevented"
         except Exception as e:
             assert "cannot be modified" in str(e)
-    # Verify transaction unchanged
-    tx = storage.get_by_id(tx_id)
-    assert tx.amount == sample_transaction.amount
 
 
-def test_get_summary(storage):
-    """Test getting transaction summary."""
-    storage.add(Transaction(
-        amount=Decimal("1000.00"),
-        description="Salary",
-        category="income",
-        timestamp=datetime(2024, 1, 1),
-    ))
-    storage.add(Transaction(
-        amount=Decimal("-50.00"),
-        description="Groceries",
-        category="food",
-        timestamp=datetime(2024, 1, 2),
-    ))
-    storage.add(Transaction(
-        amount=Decimal("-100.00"),
-        description="Utilities",
-        category="bills",
-        timestamp=datetime(2024, 1, 3),
-    ))
-
-    summary = storage.get_summary()
-
-    assert summary["income"] == Decimal("1000")
-    assert summary["expenses"] == Decimal("-150")
-    assert summary["balance"] == Decimal("850")
-    assert summary["count"] == 3
-    assert "income" in summary["by_category"]
-    assert "food" in summary["by_category"]
-    assert "bills" in summary["by_category"]
+def test_immutable_no_delete_line_item(storage):
+    """Test that line items cannot be deleted."""
+    storage.add(make_entry())
+    with storage._get_connection() as conn:
+        try:
+            conn.execute("DELETE FROM line_items WHERE id = 1")
+            assert False, "Delete should have been prevented"
+        except Exception as e:
+            assert "cannot be deleted" in str(e)
 
 
-def test_empty_summary(storage):
-    """Test summary with no transactions."""
-    summary = storage.get_summary()
-    assert summary["count"] == 0
-    assert summary["income"] == Decimal("0")
-    assert summary["expenses"] == Decimal("0")
-    assert summary["balance"] == Decimal("0")
+def test_immutable_no_update_line_item(storage):
+    """Test that line items cannot be modified."""
+    storage.add(make_entry())
+    with storage._get_connection() as conn:
+        try:
+            conn.execute("UPDATE line_items SET debit = '999.99' WHERE id = 1")
+            assert False, "Update should have been prevented"
+        except Exception as e:
+            assert "cannot be modified" in str(e)
+
+
+def test_get_trial_balance(storage):
+    """Test trial balance calculation."""
+    storage.add(make_entry("Salary", "cash", "revenue", "1000.00"))
+    storage.add(make_entry("Groceries", "expenses", "cash", "50.00"))
+    storage.add(make_entry("Utilities", "expenses", "cash", "100.00"))
+
+    balance = storage.get_trial_balance()
+
+    assert balance["cash"]["debits"] == Decimal("1000")
+    assert balance["cash"]["credits"] == Decimal("150")
+    assert balance["cash"]["net"] == Decimal("850")
+
+    assert balance["expenses"]["debits"] == Decimal("150")
+    assert balance["expenses"]["credits"] == Decimal("0")
+    assert balance["expenses"]["net"] == Decimal("150")
+
+    assert balance["revenue"]["debits"] == Decimal("0")
+    assert balance["revenue"]["credits"] == Decimal("1000")
+    assert balance["revenue"]["net"] == Decimal("-1000")
+
+
+def test_trial_balance_empty(storage):
+    """Test trial balance with no entries."""
+    assert storage.get_trial_balance() == {}
+
+
+def test_trial_balance_debits_equal_credits(storage):
+    """Test that total debits always equal total credits."""
+    storage.add(make_entry("Salary", "cash", "revenue", "1000.00"))
+    storage.add(make_entry("Groceries", "expenses", "cash", "50.00"))
+
+    balance = storage.get_trial_balance()
+    total_debits = sum(v["debits"] for v in balance.values())
+    total_credits = sum(v["credits"] for v in balance.values())
+    assert total_debits == total_credits
 
 
 def test_database_not_initialized_error(tmp_path):
@@ -173,11 +177,5 @@ def test_init_database(tmp_path):
     db_path = tmp_path / "ledger.bozo"
     storage = TransactionStorage.init_database(db_path)
     assert db_path.exists()
-    # Should be able to use it immediately
-    storage.add(Transaction(
-        amount=Decimal("100.00"),
-        description="Test",
-        category="test",
-        timestamp=datetime(2024, 1, 1),
-    ))
+    storage.add(make_entry())
     assert len(storage.get_all()) == 1

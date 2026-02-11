@@ -1,4 +1,4 @@
-"""Transaction model and storage."""
+"""Journal entry and line item models for double-entry accounting."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -6,36 +6,20 @@ from decimal import Decimal
 
 
 @dataclass
-class Transaction:
-    """Represents a financial transaction."""
+class LineItem:
+    """A single debit or credit line in a journal entry."""
 
-    amount: Decimal
+    account: str
+    debit: Decimal | None = None
+    credit: Decimal | None = None
+    id: int | None = None
+
+
+@dataclass
+class JournalEntry:
+    """A double-entry journal entry with balanced debits and credits."""
+
     description: str
-    category: str
     timestamp: datetime
-    id: int | None = field(default=None)
-
-    def __post_init__(self):
-        if isinstance(self.amount, (int, float)):
-            self.amount = Decimal(str(self.amount))
-
-    def to_dict(self) -> dict:
-        """Convert transaction to dictionary."""
-        return {
-            "id": self.id,
-            "amount": str(self.amount),
-            "description": self.description,
-            "category": self.category,
-            "timestamp": self.timestamp.isoformat(),
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "Transaction":
-        """Create transaction from dictionary."""
-        return cls(
-            id=data.get("id"),
-            amount=Decimal(data["amount"]),
-            description=data["description"],
-            category=data["category"],
-            timestamp=datetime.fromisoformat(data["timestamp"]),
-        )
+    line_items: list[LineItem] = field(default_factory=list)
+    id: int | None = None
